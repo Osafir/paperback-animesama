@@ -3,7 +3,9 @@ import {
     Chapter,
     ChapterDetails,
     ContentRating,
+    HomeSection,
     PagedResults,
+    PartialSourceManga,
     Request,
     Response,
     SearchRequest,
@@ -19,7 +21,7 @@ import type { ChapterReference, ScanRoute } from './Models'
 import { AnimeSamaParser } from './Parser'
 
 export const AnimeSamaInfo: SourceInfo = {
-    version: '1.0.0',
+    version: '1.0.1',
     name: 'Anime-Sama',
     icon: 'icon.png',
     author: 'paperback-animesama contributors',
@@ -31,7 +33,7 @@ export const AnimeSamaInfo: SourceInfo = {
         { text: 'French', type: BadgeColor.GREY },
         { text: 'Scans', type: BadgeColor.GREEN },
     ],
-    intents: SourceIntents.MANGA_CHAPTERS,
+    intents: SourceIntents.MANGA_CHAPTERS | SourceIntents.HOMEPAGE_SECTIONS,
 }
 
 class AnimeSamaInterceptor implements SourceInterceptor {
@@ -65,12 +67,22 @@ export class AnimeSama extends Source {
         const response = await this.get(`${ANIME_SAMA_BASE_URL}/catalogue?${SCAN_CATALOGUE_QUERY}&search=${encodeURIComponent(title)}&page=1`)
         const cards = this.parser.parseSearchCards(response)
         return App.createPagedResults({
-            results: cards.map((card) => App.createPartialSourceManga({
-                mangaId: card.id,
-                title: card.title,
-                image: card.image,
-            })),
+            results: cards.map((card) => this.toPartialSourceManga(card)),
         })
+    }
+
+    async getHomePageSections(sectionCallback: (section: HomeSection) => void): Promise<void> {
+        const section = App.createHomeSection({
+            id: 'popular-scans',
+            title: 'Scans populaires',
+            type: 'singleRowNormal',
+            containsMoreItems: false,
+        })
+        sectionCallback(section)
+
+        const html = await this.get(`${ANIME_SAMA_BASE_URL}/catalogue?${SCAN_CATALOGUE_QUERY}&page=1`)
+        section.items = this.parser.parseSearchCards(html).map((card) => this.toPartialSourceManga(card))
+        sectionCallback(section)
     }
 
     async getMangaDetails(mangaId: string): Promise<SourceManga> {
@@ -176,6 +188,14 @@ export class AnimeSama extends Source {
         const normalized = this.parser.normalizeMangaPath(mangaId)
         if (normalized === undefined) throw new Error('Invalid Anime-Sama manga identifier.')
         return `${ANIME_SAMA_BASE_URL}${normalized}`
+    }
+
+    private toPartialSourceManga(card: { id: string, title: string, image: string }): PartialSourceManga {
+        return App.createPartialSourceManga({
+            mangaId: card.id,
+            title: card.title,
+            image: card.image,
+        })
     }
 
     private encodeChapterId(reference: ChapterReference): string {

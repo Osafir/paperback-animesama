@@ -15,6 +15,7 @@ global.App = {
     }),
     createRequest: (info) => ({ headers: {}, cookies: [], ...info }),
     createPagedResults: (info) => info,
+    createHomeSection: (info) => ({ items: [], ...info }),
     createPartialSourceManga: (info) => info,
     createTagSection: (info) => info,
     createTag: (info) => info,
@@ -27,6 +28,10 @@ global.App = {
 async function main() {
     const { Sources } = require('../bundles/AnimeSama/source.js')
     const source = new Sources.AnimeSama(load(''))
+    const sections = []
+    await source.getHomePageSections((section) => sections.push(section))
+    const homeItems = sections.at(-1)?.items ?? []
+    if (homeItems.length === 0) throw new Error('Source homepage returned no scan cards')
     const search = await source.getSearchResults({ title: 'Frieren' }, undefined)
     const result = search.results[0]
     if (result === undefined) throw new Error('Source returned no result for Frieren')
@@ -44,6 +49,7 @@ async function main() {
 
     console.table([{
         result: result.title,
+        homeItems: homeItems.length,
         title: details.mangaInfo.titles[0],
         chapters: chapters.length,
         pages: chapterDetails.pages.length,
