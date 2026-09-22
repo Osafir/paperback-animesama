@@ -10,8 +10,9 @@
     "prebundle": "node -e \"require('fs').mkdirSync('bundles', { recursive: true })\"",
     "bundle": "paperback bundle --use-node-fs",
     "smoke": "tsx scripts/smoke.ts",
-    "test": "npm run typecheck && npm run smoke",
-    "ci": "npm run test && npm run bundle"
+    "source-smoke": "npm run bundle && node scripts/source-smoke.cjs",
+    "test": "npm run typecheck && npm run smoke && npm run source-smoke",
+    "ci": "npm run test"
   },
   "keywords": [
     "paperback",

@@ -25,9 +25,7 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npm run typecheck
-      - run: npm run smoke
-      - run: npm run bundle
+      - run: npm run test
       - uses: actions/upload-pages-artifact@v3
         with:
           path: bundles
