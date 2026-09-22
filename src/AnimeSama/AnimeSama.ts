@@ -18,10 +18,10 @@ import {
 } from '@paperback/types'
 import { ANIME_SAMA_BASE_URL, IMAGE_HEADERS, SCAN_CATALOGUE_QUERY, SOURCE_HEADERS } from './Constants'
 import type { ChapterReference, ScanRoute } from './Models'
-import { AnimeSamaParser } from './Parser'
+import { AnimeSamaParser, SearchCard } from './Parser'
 
 export const AnimeSamaInfo: SourceInfo = {
-    version: '1.0.1',
+    version: '1.1.0',
     name: 'Anime-Sama',
     icon: 'icon.png',
     author: 'paperback-animesama contributors',
@@ -60,29 +60,104 @@ export class AnimeSama extends Source {
 
     private readonly parser = new AnimeSamaParser(this.cheerio)
 
-    async getSearchResults(query: SearchRequest, _metadata: unknown | undefined): Promise<PagedResults> {
+    async getSearchResults(query: SearchRequest, metadata: { page?: number } | undefined): Promise<PagedResults> {
         const title = query.title?.trim() ?? ''
-        if (title.length === 0) return App.createPagedResults({ results: [] })
-
-        const response = await this.get(`${ANIME_SAMA_BASE_URL}/catalogue?${SCAN_CATALOGUE_QUERY}&search=${encodeURIComponent(title)}&page=1`)
+        const page = metadata?.page ?? 1
+        const format = query.includedTags?.find((tag) => tag.id.startsWith('format:'))?.id.slice(7)
+        const genres = query.includedTags?.filter((tag) => tag.id.startsWith('genre:')).map((tag) => tag.id.slice(6)) ?? []
+        if (format === 'Manhwa' || format === 'Manhua' || format === 'Novel') genres.push(format)
+        const url = this.catalogueUrl(page, title, genres)
+        const response = await this.get(url)
         const cards = this.parser.parseSearchCards(response)
+        const results = format === 'Manga' ? cards.filter((card) => this.isMangaCard(card)) : cards
         return App.createPagedResults({
-            results: cards.map((card) => this.toPartialSourceManga(card)),
+            results: results.map((card) => this.toPartialSourceManga(card)),
+            metadata: this.parser.hasNextPage(response, page) ? { page: page + 1 } : undefined,
         })
     }
 
     async getHomePageSections(sectionCallback: (section: HomeSection) => void): Promise<void> {
-        const section = App.createHomeSection({
-            id: 'popular-scans',
-            title: 'Scans populaires',
-            type: 'singleRowNormal',
-            containsMoreItems: false,
-        })
-        sectionCallback(section)
+        const [homeHtml, catalogueHtml] = await Promise.all([
+            this.get(`${ANIME_SAMA_BASE_URL}/`).catch(() => ''),
+            this.get(this.catalogueUrl(1)).catch(() => ''),
+        ])
+        const latest = this.parser.parseLatestScans(homeHtml)
+        const all = this.parser.parseSearchCards(catalogueHtml)
+        if (latest.length === 0 && all.length === 0) {
+            throw new Error('Anime-Sama did not return any readable scans for the homepage.')
+        }
 
-        const html = await this.get(`${ANIME_SAMA_BASE_URL}/catalogue?${SCAN_CATALOGUE_QUERY}&page=1`)
-        section.items = this.parser.parseSearchCards(html).map((card) => this.toPartialSourceManga(card))
-        sectionCallback(section)
+        const lastPage = this.parser.lastCataloguePage(catalogueHtml)
+        const discoveryPage = lastPage > 1 ? 2 + Math.floor(Date.now() / 86_400_000) % (lastPage - 1) : 1
+        const discoveryHtml = lastPage > 1 ? await this.get(this.catalogueUrl(discoveryPage)).catch(() => '') : catalogueHtml
+        const discovery = this.parser.parseSearchCards(discoveryHtml).slice(0, 24)
+
+        for (const [id, title, cards, hasMore] of [
+            ['latest', 'Dernières sorties', latest.slice(0, 24), latest.length > 24],
+            ['discover', 'À découvrir', discovery, false],
+            ['all', 'Tout le catalogue', all.slice(0, 24), this.parser.hasNextPage(catalogueHtml, 1)],
+        ] as [string, string, SearchCard[], boolean][]) {
+            if (cards.length === 0) continue
+            sectionCallback(App.createHomeSection({
+                id,
+                title,
+                type: 'singleRowNormal',
+                items: cards.map((card) => this.toPartialSourceManga(card)),
+                containsMoreItems: hasMore,
+            }))
+        }
+    }
+
+    async getViewMoreItems(homepageSectionId: string, metadata: { page?: number, offset?: number } | undefined): Promise<PagedResults> {
+        if (homepageSectionId === 'latest') {
+            const offset = metadata?.offset ?? 24
+            const html = await this.get(`${ANIME_SAMA_BASE_URL}/`)
+            const latest = this.parser.parseLatestScans(html)
+            return App.createPagedResults({
+                results: latest.slice(offset, offset + 24).map((card) => this.toPartialSourceManga(card)),
+                metadata: offset + 24 < latest.length ? { offset: offset + 24 } : undefined,
+            })
+        }
+        if (homepageSectionId === 'all') {
+            const page = metadata?.page ?? 1
+            const offset = metadata?.offset ?? 24
+            const html = await this.get(this.catalogueUrl(page))
+            const cards = this.parser.parseSearchCards(html)
+            const next = offset + 24 < cards.length
+                ? { page, offset: offset + 24 }
+                : this.parser.hasNextPage(html, page) ? { page: page + 1, offset: 0 } : undefined
+            return App.createPagedResults({
+                results: cards.slice(offset, offset + 24).map((card) => this.toPartialSourceManga(card)),
+                metadata: next,
+            })
+        }
+        throw new Error(`Unknown Anime-Sama home section: ${homepageSectionId}`)
+    }
+
+    async getSearchTags(): Promise<TagSection[]> {
+        const html = await this.get(this.catalogueUrl(1))
+        const genreNames = this.parser.parseGenreOptions(html)
+        return [
+            App.createTagSection({
+                id: 'formats',
+                label: 'Format',
+                tags: [
+                    ['Manga', 'Manga'],
+                    ['Manhwa', 'Manhwa'],
+                    ['Manhua', 'Manhua'],
+                    ['Novel', 'Romans adaptés en scans'],
+                ].map(([id, label]) => App.createTag({ id: `format:${id}`, label })),
+            }),
+            App.createTagSection({
+                id: 'genres',
+                label: 'Genres',
+                tags: genreNames.map((label) => App.createTag({ id: `genre:${label}`, label })),
+            }),
+        ]
+    }
+
+    async supportsTagExclusion(): Promise<boolean> {
+        return false
     }
 
     async getMangaDetails(mangaId: string): Promise<SourceManga> {
@@ -190,11 +265,23 @@ export class AnimeSama extends Source {
         return `${ANIME_SAMA_BASE_URL}${normalized}`
     }
 
-    private toPartialSourceManga(card: { id: string, title: string, image: string }): PartialSourceManga {
+    private catalogueUrl(page: number, title = '', genres: string[] = []): string {
+        const parameters = [SCAN_CATALOGUE_QUERY, `page=${page}`]
+        if (title.length > 0) parameters.push(`search=${encodeURIComponent(title)}`)
+        for (const genre of genres) parameters.push(`genre%5B%5D=${encodeURIComponent(genre)}`)
+        return `${ANIME_SAMA_BASE_URL}/catalogue/?${parameters.join('&')}`
+    }
+
+    private isMangaCard(card: SearchCard): boolean {
+        return !card.genres.some((genre) => /^(manhwa|manhua|webcomic)$/i.test(genre))
+    }
+
+    private toPartialSourceManga(card: SearchCard): PartialSourceManga {
         return App.createPartialSourceManga({
             mangaId: card.id,
             title: card.title,
             image: card.image,
+            subtitle: card.subtitle,
         })
     }
 

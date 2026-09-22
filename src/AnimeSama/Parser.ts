@@ -21,6 +21,9 @@ export interface SearchCard {
     id: string
     title: string
     image: string
+    genres: string[]
+    category?: string
+    subtitle?: string
 }
 
 export interface NamedChapter {
@@ -48,10 +51,57 @@ export class AnimeSamaParser {
                 id,
                 title,
                 image: this.absoluteUrl($(card).find('img').first().attr('src')),
+                genres: $(card).find('.genre-tag').map((_genreIndex, genre) => this.textOrEmpty($(genre))).get(),
+                subtitle: $(card).find('.genre-tag').slice(0, 2).map((_genreIndex, genre) => this.textOrEmpty($(genre))).get().join(' · '),
             })
         })
 
         return [...cards.values()]
+    }
+
+    parseLatestScans(html: string): SearchCard[] {
+        const $ = this.cheerio.load(html)
+        const cards = new Map<string, SearchCard>()
+        $('#containerAjoutsScans > div').each((_index, card) => {
+            const anchor = $(card).find('a[href*="/catalogue/"]').first()
+            const id = this.normalizeMangaPath(anchor.attr('href') ?? '')
+            const title = this.textOrEmpty($(card).find('h2.card-title, h2, h3').first())
+            if (id === undefined || title.length === 0 || cards.has(id)) return
+            const category = this.textOrEmpty($(card).find('.scan-badge .badge-text').first())
+            const chapter = this.textOrEmpty($(card).find('.info-item.chapter').first())
+            cards.set(id, {
+                id,
+                title,
+                image: this.absoluteUrl($(card).find('img.card-image, .card-image-container img').first().attr('src')),
+                genres: [],
+                category,
+                subtitle: [category, chapter].filter(Boolean).join(' · '),
+            })
+        })
+        return [...cards.values()]
+    }
+
+    parseGenreOptions(html: string): string[] {
+        const $ = this.cheerio.load(html)
+        return $('input[name="genre[]"]').map((_index, input) => $(input).attr('value')?.trim() ?? '').get().filter(Boolean)
+    }
+
+    hasNextPage(html: string, currentPage: number): boolean {
+        const $ = this.cheerio.load(html)
+        return $('#list_pagination a[href]').toArray().some((anchor) => {
+            const href = $(anchor).attr('href') ?? ''
+            const match = href.match(/[?&]page=(\d+)(?:&|$)/)
+            return Number(match?.[1]) === currentPage + 1
+        })
+    }
+
+    lastCataloguePage(html: string): number {
+        const $ = this.cheerio.load(html)
+        const pageNumbers = $('#list_pagination a[href]').toArray().map((anchor) => {
+            const href = $(anchor).attr('href') ?? ''
+            return Number(href.match(/[?&]page=(\d+)(?:&|$)/)?.[1] ?? 1)
+        })
+        return Math.max(1, ...pageNumbers.filter(Number.isFinite))
     }
 
     parseMetadata(html: string): ParsedMangaMetadata {
@@ -115,7 +165,13 @@ export class AnimeSamaParser {
         const totalStoredChapters = Object.keys(pageMap).length
         if (totalStoredChapters === 0) return []
 
-        const commands = [...html.matchAll(LIST_COMMAND_PATTERN)]
+        const scriptContent = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)]
+            .map((match) => match[1] ?? '')
+            .filter((script) => /\bresetListe\s*\(/.test(script))
+            .join('\n')
+            .replace(/\/\*[\s\S]*?\*\//g, '')
+            .replace(/^\s*\/\/.*$/gm, '')
+        const commands = [...scriptContent.matchAll(LIST_COMMAND_PATTERN)]
         if (commands.length === 0) return this.defaultChapterNames(totalStoredChapters)
 
         const chapters: string[] = []
@@ -160,7 +216,10 @@ export class AnimeSamaParser {
         }
 
         if (!hasEffectiveCommand || chapters.length === 0) return this.defaultChapterNames(totalStoredChapters)
-        return chapters.map((displayName, index) => ({ storageId: index + 1, displayName }))
+        while (chapters.length < totalStoredChapters) {
+            chapters.push(`Chapitre ${chapters.length + 1 - specialCount}`)
+        }
+        return chapters.slice(0, totalStoredChapters).map((displayName, index) => ({ storageId: index + 1, displayName }))
     }
 
     chapterNumber(displayName: string, fallback: number): number {
@@ -171,21 +230,23 @@ export class AnimeSamaParser {
 
     absoluteUrl(value: string | undefined): string {
         if (value === undefined || value.trim().length === 0) return ''
-        try {
-            return new URL(value, ANIME_SAMA_BASE_URL).toString()
-        } catch {
-            return ''
-        }
+        const trimmed = value.trim()
+        if (/^https?:\/\//i.test(trimmed)) return trimmed
+        if (trimmed.startsWith('//')) return `https:${trimmed}`
+        if (trimmed.startsWith('/')) return `${ANIME_SAMA_BASE_URL}${trimmed}`
+        return `${ANIME_SAMA_BASE_URL}/${trimmed.replace(/^\.\//, '')}`
     }
 
     normalizeMangaPath(value: string): string | undefined {
-        try {
-            const url = new URL(value, ANIME_SAMA_BASE_URL)
-            if (url.origin !== ANIME_SAMA_BASE_URL || !url.pathname.startsWith('/catalogue/')) return undefined
-            return `${url.pathname.replace(/\/scan\/[^/]+\/?$/, '/').replace(/\/+$/, '')}/`
-        } catch {
-            return undefined
-        }
+        const trimmed = value.trim()
+        const path = trimmed.startsWith(ANIME_SAMA_BASE_URL)
+            ? trimmed.slice(ANIME_SAMA_BASE_URL.length)
+            : trimmed
+        if (!path.startsWith('/catalogue/')) return undefined
+        const cleanPath = path.split(/[?#]/, 1)[0]
+        const match = cleanPath.match(/^\/catalogue\/([^/]+)(?:\/scan\/[^/]+\/?)?\/?$/)
+        if (match === null || match[1] === undefined) return undefined
+        return `/catalogue/${match[1]}/`
     }
 
     private normalizeScanPath(value: string): string | undefined {
@@ -222,4 +283,3 @@ export class AnimeSamaParser {
         return element.text().replace(/\s+/g, ' ').trim()
     }
 }
-
