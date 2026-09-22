@@ -1,0 +1,34 @@
+{
+  "name": "paperback-animesama",
+  "version": "1.0.0",
+  "private": true,
+  "repositoryName": "Anime-Sama for Paperback 0.8",
+  "description": "A direct Anime-Sama scan source for Paperback 0.8.",
+  "main": "index.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "prebundle": "node -e \"require('fs').mkdirSync('bundles', { recursive: true })\"",
+    "bundle": "paperback bundle --use-node-fs",
+    "smoke": "tsx scripts/smoke.ts",
+    "test": "npm run typecheck && npm run smoke",
+    "ci": "npm run test && npm run bundle"
+  },
+  "keywords": [
+    "paperback",
+    "paperback-0.8",
+    "anime-sama",
+    "manga"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@paperback/toolchain": "0.8.7",
+    "@paperback/types": "0.8.7",
+    "@types/node": "^20.17.0",
+    "cheerio": "1.0.0-rc.12",
+    "tsx": "^4.19.0",
+    "typescript": "^4.9.5"
+  },
+  "engines": {
+    "node": ">=18 <25"
+  }
+}
